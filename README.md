@@ -40,14 +40,14 @@ No configuration required. It works out of the box.
 ## How It Works
 
 ```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+┌───────────────┐     ┌───────────────┐     ┌───────────────┐     ┌───────────────┐
 │  YouTube      │────>│  Transcript   │────>│  NLP Engine   │────>│  UI Render    │
 │  Video Load   │     │  Extraction   │     │               │     │               │
 │               │     │  7 methods    │     │  TF-IDF       │     │  Chapters     │
 │  Auto-detect  │     │  with auto    │     │  Cosine sim   │     │  HUD + Bar    │
 │  duration     │     │  failover     │     │  TextRank     │     │  Fillers      │
 │  + cached?    │     │  + word-level │     │  POI scoring  │     │  AutoSkip     │
-└──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
+└───────────────┘     └───────────────┘     └───────────────┘     └───────────────┘
 ```
 
 ### Transcript Extraction (7-Method Failover)
