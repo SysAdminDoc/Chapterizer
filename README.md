@@ -6,7 +6,7 @@
 ![Tampermonkey](https://img.shields.io/badge/Tampermonkey-compatible-00485B?logo=tampermonkey&logoColor=white)
 ![Violentmonkey](https://img.shields.io/badge/Violentmonkey-compatible-6a4dbc)
 
-> Auto-generates chapters, detects filler words, and skips pauses on YouTube. Works instantly — no setup, no servers, no API keys.
+> Auto-generates chapters, detects filler words, and skips pauses on YouTube. Unlike the other extensions, there are no external services called, this is entirely local and turn-key.
 
 <img width="380" height="797" alt="image" src="https://github.com/user-attachments/assets/bb806113-1c03-441c-92ca-78d85f224049" />
 
