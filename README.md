@@ -8,7 +8,8 @@
 
 > Auto-generates chapters, detects filler words, and skips pauses on YouTube. Works instantly — no setup, no servers, no API keys.
 
-![Screenshot](screenshot.png)
+<img width="380" height="797" alt="image" src="https://github.com/user-attachments/assets/bb806113-1c03-441c-92ca-78d85f224049" />
+
 
 ## Installation
 
