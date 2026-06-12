@@ -2,6 +2,8 @@
 // @name         Chapterizer
 // @namespace    https://github.com/SysAdminDoc
 // @version      3.0.0
+// @updateURL    https://raw.githubusercontent.com/SysAdminDoc/Chapterizer/main/Chapterizer.user.js
+// @downloadURL  https://raw.githubusercontent.com/SysAdminDoc/Chapterizer/main/Chapterizer.user.js
 // @description  Auto-generates chapters, detects filler words & skips pauses on YouTube. Works instantly - no setup, no servers, no API keys.
 // @author       SysAdminDoc
 // @match        https://www.youtube.com/*
