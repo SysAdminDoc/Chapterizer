@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chapterizer
 // @namespace    https://github.com/SysAdminDoc
-// @version      3.1.0
+// @version      3.2.0
 // @updateURL    https://raw.githubusercontent.com/SysAdminDoc/Chapterizer/main/Chapterizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/SysAdminDoc/Chapterizer/main/Chapterizer.user.js
 // @description  Auto-generates chapters, detects filler words & skips pauses on YouTube. Works instantly - no setup, no servers, no API keys.
@@ -22,7 +22,7 @@
 (function() {
     'use strict';
 
-    const SCRIPT_VERSION = '3.1.0';
+    const SCRIPT_VERSION = '3.2.0';
     const SETTINGS_KEY = 'chapterizer_settings';
 
     // ══════════════════════════════════════════════════════════════
@@ -503,7 +503,9 @@
         },
 
         // Format segments into transcript text
-        _formatTranscript(segments) {
+        _formatTranscript(segments, format = 'txt') {
+            if (format === 'srt') return this._formatSRT(segments);
+            if (format === 'vtt') return this._formatVTT(segments);
             return segments.map(s => {
                 if (this.config.includeTimestamps) {
                     const timestamp = this._formatTimestamp(s.startMs);
@@ -511,6 +513,33 @@
                 }
                 return s.text;
             }).join('\n');
+        },
+
+        _formatSRT(segments) {
+            return segments.map((s, i) => {
+                const start = this._formatTimestampSRT(s.startMs);
+                const end = this._formatTimestampSRT(s.endMs);
+                return `${i + 1}\n${start} --> ${end}\n${s.text}\n`;
+            }).join('\n');
+        },
+
+        _formatVTT(segments) {
+            const lines = ['WEBVTT\n'];
+            segments.forEach(s => {
+                const start = this._formatTimestampSRT(s.startMs).replace(',', '.');
+                const end = this._formatTimestampSRT(s.endMs).replace(',', '.');
+                lines.push(`${start} --> ${end}\n${s.text}\n`);
+            });
+            return lines.join('\n');
+        },
+
+        _formatTimestampSRT(ms) {
+            const totalMs = Math.max(0, ms || 0);
+            const h = Math.floor(totalMs / 3600000);
+            const m = Math.floor((totalMs % 3600000) / 60000);
+            const s = Math.floor((totalMs % 60000) / 1000);
+            const millis = totalMs % 1000;
+            return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')},${String(millis).padStart(3,'0')}`;
         },
 
         _formatTimestamp(ms) {
@@ -1499,7 +1528,10 @@
                         if (chapters.length&&chapters[0].start>5) chapters[0].start=0;
                         for (let i=0;i<chapters.length;i++) chapters[i].end=i<chapters.length-1?chapters[i+1].start:totalSecs;
                         const pois = detectPOIs(segments, chapters, totalSecs);
-                        self.postMessage({chapters, pois});
+                        const usedDepths = boundaries.slice(1).map(bi => { const si = similarities.findIndex(s=>s.idx===bi); return si>=0?depthScores[si]:0; });
+                        const avgDepth = usedDepths.length ? usedDepths.reduce((a,b)=>a+b,0)/usedDepths.length : 0;
+                        const confidence = avgDepth > 0.4 ? 'high' : avgDepth > 0.15 ? 'medium' : 'low';
+                        self.postMessage({chapters, pois, confidence});
                     };
                 `;
                 const blob = new Blob([workerCode], { type: 'application/javascript' });
@@ -1662,8 +1694,11 @@
                 // ── Step 6: POI detection (multi-signal scoring) ──
                 const pois = this._detectPOIs(segments, chapters, totalSecs);
 
-                this._log('NLP result:', chapters.length, 'chapters,', pois.length, 'POIs from', groups.length, 'groups');
-                return { chapters, pois };
+                const usedDepths = boundaries.slice(1).map(bi => { const si = similarities.findIndex(s => s.idx === bi); return si >= 0 ? depthScores[si] : 0; });
+                const avgDepth = usedDepths.length ? usedDepths.reduce((a, b) => a + b, 0) / usedDepths.length : 0;
+                const confidence = avgDepth > 0.4 ? 'high' : avgDepth > 0.15 ? 'medium' : 'low';
+                this._log('NLP result:', chapters.length, 'chapters,', pois.length, 'POIs, confidence:', confidence, '(avgDepth:', avgDepth.toFixed(3) + ')');
+                return { chapters, pois, confidence };
             },
 
             // ═══ POI DETECTION (multi-signal scoring) ═══
@@ -2340,7 +2375,9 @@
 
                 if (this._activeTab === 'chapters') {
                     if (hasData) {
-                        tabHTML = `<div class="cf-section-label">Chapters (${this._chapterData.chapters.length})</div><ul class="cf-chapter-list">`;
+                        const confColors = { high: '#10b981', medium: '#f59e0b', low: '#ef4444' };
+                        const conf = this._chapterData.confidence || 'medium';
+                        tabHTML = `<div class="cf-section-label" style="display:flex;align-items:center;justify-content:space-between"><span>Chapters (${this._chapterData.chapters.length})</span><span style="font-size:9px;font-weight:600;color:${confColors[conf]};text-transform:capitalize;letter-spacing:0">${conf} confidence</span></div><ul class="cf-chapter-list">`;
                         this._chapterData.chapters.forEach((c, i) => {
                             const color = this._CF_COLORS[i % this._CF_COLORS.length];
                             tabHTML += `<li class="cf-chapter-item" data-cf-seek="${c.start}"><span class="cf-chapter-dot" style="background:${color}"></span><span class="cf-chapter-time">${this._formatTime(c.start)}</span><span class="cf-chapter-title">${this._esc(c.title)}</span></li>`;
@@ -2353,7 +2390,7 @@
                             });
                             tabHTML += `</ul>`;
                         }
-                        tabHTML += `<div style="margin-top:8px"><button class="cf-action-btn" id="cf-export-yt">Copy Chapters</button></div>`;
+                        tabHTML += `<div style="margin-top:8px;display:flex;gap:6px"><button class="cf-action-btn" id="cf-export-yt">Copy Chapters</button><button class="cf-action-btn" id="cf-export-json">Export JSON</button></div>`;
                     } else {
                         tabHTML = `<div class="cf-empty"><svg viewBox="0 0 24 24" style="width:40px;height:40px;fill:rgba(255,255,255,0.08);margin-bottom:12px"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg><div>No chapters generated yet</div><div style="margin-top:4px;font-size:11px;color:rgba(255,255,255,0.15)">Click Generate to analyze this video</div></div>`;
                     }
@@ -2485,6 +2522,15 @@
                     el.addEventListener('click', () => self._seekTo(parseFloat(el.dataset.cfSeek)));
                 });
                 this._panelEl.querySelector('#cf-export-yt')?.addEventListener('click', () => self._exportChaptersYouTube());
+                this._panelEl.querySelector('#cf-export-json')?.addEventListener('click', () => {
+                    if (!self._chapterData) return;
+                    const exportData = { videoId: self._currentVideoId, chapters: self._chapterData.chapters, pois: self._chapterData.pois || [], confidence: self._chapterData.confidence || null };
+                    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a'); a.href = url; a.download = `chapters-${self._currentVideoId}.json`;
+                    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+                    showToast('Chapters exported as JSON', '#10b981');
+                });
 
                 // AutoSkip bindings
                 this._panelEl.querySelector('#cf-autoskip-mode')?.addEventListener('change', (e) => {

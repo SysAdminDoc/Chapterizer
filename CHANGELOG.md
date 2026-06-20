@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.2.0] - 2026-06-20
+
+### Added
+- Web Worker offloading — NLP computation (TF-IDF, cosine similarity, TextRank, POI detection) now runs off the main thread
+- Multi-language stopword support with auto-detection for 10 languages (es, fr, de, pt, ja, ko, zh, hi, ar, ru)
+- TextTiling depth-score boundary detection replaces raw cosine similarity thresholds for higher-confidence chapter boundaries
+- Adaptive NLP window sizing — 120s groups for videos >45min, 60s for shorter
+- Intra-segment pause detection from word-level timing gaps
+- IndexedDB caching with LRU eviction (replaces localStorage, auto-migrates existing cache)
+- Settings export/import via JSON files
+- Chapter quality confidence score (high/medium/low) shown in Chapters tab
+- Transcript download in SRT and VTT formats
+- Chapter export as JSON with structured data (timestamps, titles, POIs, confidence)
+- Undo button on auto-skip toasts to seek back to pre-skip position
+- Filler word regex compilation memoization
+
+### Changed
+- Chapter tracking and auto-skip merged into single RAF playback loop (halved per-frame CPU cost)
+
 ## [3.1.0] - 2026-06-20
 
 ### Fixed
