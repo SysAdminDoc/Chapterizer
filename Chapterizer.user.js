@@ -1159,6 +1159,49 @@
             _NLP_STOPS_ARRAY: ['the','and','that','this','with','for','are','was','were','been','have','has','had','not','but','what','all','can','her','his','from','they','will','one','its','also','just','more','about','would','there','their','which','could','other','than','then','these','some','them','into','only','your','when','very','most','over','such','after','know','like','going','right','think','really','want','well','here','look','make','come','how','did','get','got','say','said','because','way','still','being','those','where','back','does','take','much','many','through','before','should','each','between','must','same','thing','things','even','every','doing','something','anything','nothing','everything','need','let','see','yeah','yes','okay','actually','gonna','kind','sort','mean','basically','literally','stuff','pretty','little','whole','sure','probably','maybe','guess','though','enough','around','might','quite','able','always','never','already','again','another','talking','talk','people','called','start','started','going','really','actually','point','work','working','time','way','lot','part'],
             _NLP_STOPS: new Set(['the','and','that','this','with','for','are','was','were','been','have','has','had','not','but','what','all','can','her','his','from','they','will','one','its','also','just','more','about','would','there','their','which','could','other','than','then','these','some','them','into','only','your','when','very','most','over','such','after','know','like','going','right','think','really','want','well','here','look','make','come','how','did','get','got','say','said','because','way','still','being','those','where','back','does','take','much','many','through','before','should','each','between','must','same','thing','things','even','every','doing','something','anything','nothing','everything','need','let','see','yeah','yes','okay','actually','gonna','kind','sort','mean','basically','literally','stuff','pretty','little','whole','sure','probably','maybe','guess','though','enough','around','might','quite','able','always','never','already','again','another','talking','talk','people','called','start','started','going','really','actually','point','work','working','time','way','lot','part']),
 
+            _NLP_STOPS_I18N: {
+                es: ['de','la','que','el','en','los','del','las','por','con','una','para','como','pero','mas','fue','son','esta','todo','desde','ser','entre','cuando','muy','sin','sobre','hay','tiene','también','otro','ese','puede','cada','donde','sus','les','esto','ante','ellos','más','ese','nos','uno','ya','era','ella','así','está','cual','poco','porque','usted','están','hasta','algo','estos','nosotros'],
+                fr: ['les','des','est','pas','une','que','dans','pour','qui','sur','par','avec','plus','mais','sont','tout','fait','aussi','bien','peut','cette','comme','elle','lui','ces','ont','même','aux','leur','entre','après','encore','sans','ici','tous','très','autre','sous','nous','vous','été','avoir','faire','être','dit','ça','peu'],
+                de: ['der','die','und','den','von','ist','des','ein','das','auf','dem','nicht','eine','als','auch','sich','mit','aus','für','hat','nach','noch','wie','bei','nur','über','kann','aber','vor','zum','vom','oder','wenn','ihre','dann','war','bis','doch','mehr','jetzt','sehr','schon','wir','sie','ich','ihr'],
+                pt: ['que','não','para','com','uma','por','mais','foi','como','mas','dos','das','tem','seu','sua','são','bem','está','muito','pode','isso','nos','essa','entre','quando','depois','seus','mesmo','sem','ser','ter','até','esse','cada','então','ainda','ela','outro','esta','tudo','sobre','uns','pela'],
+                ja: ['の','に','は','を','た','が','で','て','と','し','れ','さ','ある','いる','も','する','から','な','こと','として','い','や','れる','など','なっ','ない','この','ため','その','あっ','よう','また','もの','という','あり','まで','られ','なる','へ','か','だ','これ','によって','により','おり','より','による','ず','なり','られる','において','ば','なかっ','なく','しかし','について','せ','だっ','ところ','ので','ほど','ながら','うち','そして','とともに','ただし'],
+                ko: ['이','그','는','을','에','의','가','한','로','도','를','으로','에서','와','과','다','것','하다','있다','되다','수','없다','있는','것이','대한','등','같은','때','하는','또는','하고','이다','통해','이후','하여','인한','또한','했다','그리고','하면','되어','않은','되는','하지','않는'],
+                zh: ['的','了','在','是','我','有','和','就','不','人','都','一','一个','上','也','很','到','说','要','去','你','会','着','没有','看','好','自己','这'],
+                hi: ['के','में','है','को','और','का','की','से','पर','ने','एक','कि','यह','हैं','इस','लिए','था','कर','भी','हो','नहीं','तो','वह','अपने','ही','या','जो','पर','थे','उन','गया','हम','इसके','अब','तक','कुछ','लेकिन','बहुत','दो'],
+                ar: ['في','من','على','إلى','أن','هذا','التي','الذي','هذه','كان','عن','مع','بعد','قد','ذلك','ما','لا','أو','بين','هو','كل','بها','كما','بل','عند','حتى','لم','ثم','أي','منذ','إذا','إنّ','له','لها','هم','هي','وقد','فيها','إلا','هنا','نحن','أنت','عليه'],
+                ru: ['что','как','это','так','его','все','они','она','для','был','еще','или','уже','при','вот','мне','без','тоже','тут','них','где','есть','надо','ней','над','нет','нас','ему','ним','ней','были','будет','перед','после','когда','между','потом','очень','может','более','менее','чтобы','только','ничего','тогда','через','здесь','которые','который'],
+            },
+
+            _detectTranscriptLanguage(segments) {
+                const sample = segments.slice(0, 20).map(s => s.text).join(' ').slice(0, 500);
+                if (/[぀-ゟ゠-ヿ一-鿿]/.test(sample)) {
+                    if (/[぀-ゟ゠-ヿ]/.test(sample)) return 'ja';
+                    return 'zh';
+                }
+                if (/[가-힯]/.test(sample)) return 'ko';
+                if (/[؀-ۿ]/.test(sample)) return 'ar';
+                if (/[ऀ-ॿ]/.test(sample)) return 'hi';
+                if (/[Ѐ-ӿ]/.test(sample)) return 'ru';
+                const lower = sample.toLowerCase();
+                const markers = {
+                    es: /\b(el|los|las|una|que|por|con|como|para|pero|más|también|puede|tiene|entre)\b/g,
+                    fr: /\b(les|des|une|dans|pour|avec|mais|cette|sont|aussi|peut|comme|elle|encore|très)\b/g,
+                    de: /\b(der|die|und|den|ist|ein|das|nicht|auch|sich|mit|für|hat|noch|wie|nur|über)\b/g,
+                    pt: /\b(que|não|para|com|uma|por|mais|como|mas|tem|muito|pode|isso|ser|ter|até|essa)\b/g,
+                };
+                let bestLang = 'en', bestCount = 0;
+                for (const [lang, re] of Object.entries(markers)) {
+                    const matches = lower.match(re);
+                    if (matches && matches.length > bestCount) { bestCount = matches.length; bestLang = lang; }
+                }
+                return bestCount >= 5 ? bestLang : 'en';
+            },
+
+            _getStopwordsForLang(lang) {
+                if (lang === 'en' || !lang) return this._NLP_STOPS_ARRAY;
+                return this._NLP_STOPS_I18N[lang] || this._NLP_STOPS_ARRAY;
+            },
+
             // Tokenize text into clean lowercase word array
             _nlpTokenize(text) {
                 return text.toLowerCase().replace(/[^\w\s'-]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !/^\d+$/.test(w));
@@ -1287,9 +1330,8 @@
             _nlpWorker: null,
             _getNLPWorker() {
                 if (this._nlpWorker) return this._nlpWorker;
-                const stopwords = JSON.stringify(this._NLP_STOPS_ARRAY);
                 const workerCode = `
-                    const STOPS = new Set(${stopwords});
+                    let STOPS = new Set();
                     function tokenize(text) { return text.toLowerCase().replace(/[^\\w\\s'-]/g, ' ').split(/\\s+/).filter(w => w.length > 2 && !/^\\d+$/.test(w)); }
                     function bigrams(tokens) { const b = []; for (let i = 0; i < tokens.length - 1; i++) { const a = tokens[i], c = tokens[i+1]; if (!STOPS.has(a) && !STOPS.has(c) && a.length > 2 && c.length > 2) b.push(a + ' ' + c); } return b; }
                     function tfidf(docs) {
@@ -1333,7 +1375,8 @@
                         return pois;
                     }
                     self.onmessage = function(e) {
-                        const { segments, duration } = e.data;
+                        const { segments, duration, stopwords } = e.data;
+                        if (stopwords) STOPS = new Set(stopwords);
                         const totalSecs = duration || (segments[segments.length-1]?.start+30) || 300;
                         const windowSize = 30, windows = [];
                         for (const seg of segments) { const idx = Math.floor(seg.start/windowSize); while (windows.length<=idx) windows.push({start:windows.length*windowSize,texts:[]}); windows[idx].texts.push(seg.text); }
@@ -1372,9 +1415,12 @@
             _runNLPInWorker(segments, duration) {
                 return new Promise((resolve) => {
                     const worker = this._getNLPWorker();
+                    const lang = this._detectTranscriptLanguage(segments);
+                    const stopwords = this._getStopwordsForLang(lang);
+                    this._log('NLP Worker: detected language:', lang, 'stopwords:', stopwords.length);
                     const handler = (e) => { worker.removeEventListener('message', handler); resolve(e.data); };
                     worker.addEventListener('message', handler);
-                    worker.postMessage({ segments: segments.map(s => ({ start: s.start, text: s.text })), duration });
+                    worker.postMessage({ segments: segments.map(s => ({ start: s.start, text: s.text })), duration, stopwords });
                 });
             },
 
@@ -1386,6 +1432,9 @@
                 } catch(e) {
                     this._log('Worker failed, falling back to main thread:', e.message);
                 }
+                const lang = this._detectTranscriptLanguage(segments);
+                const stops = this._getStopwordsForLang(lang);
+                this._NLP_STOPS = new Set(stops);
                 const totalSecs = duration || segments[segments.length - 1]?.start + 30 || 300;
 
                 // ── Step 1: Build time-windowed documents (30-second windows) ──
