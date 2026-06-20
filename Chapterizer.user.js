@@ -15,6 +15,7 @@
 // @grant        GM_info
 // @grant        unsafeWindow
 // @connect      www.youtube.com
+// @connect      sponsor.ajay.app
 // @run-at       document-start
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=youtube.com
 // ==/UserScript==
@@ -115,13 +116,20 @@
         cfShowFillerMarkers: true,
     };
 
-    // All available filler words organized by category
     const FILLER_CATALOG = {
         'Common': ['um', 'umm', 'uh', 'uhh', 'hmm', 'hm', 'er', 'erm', 'ah', 'mhm'],
         'Phrases': ['you know', 'I mean', 'sort of', 'kind of', 'okay so', 'so yeah', 'yeah so', 'like'],
         'Extended': ['basically', 'literally', 'actually', 'right', 'anyway', 'whatever', 'I guess', 'you see'],
     };
     const ALL_FILLER_WORDS = Object.values(FILLER_CATALOG).flat();
+
+    const FILLER_CATALOGS_I18N = {
+        es: { 'Comunes': ['este', 'esto', 'ehm', 'eh', 'ah', 'pues', 'bueno'], 'Frases': ['o sea', 'es decir', 'en plan', 'a ver', 'tipo', 'como que', 'digamos'] },
+        fr: { 'Courants': ['euh', 'heu', 'bah', 'bon', 'ben', 'hein', 'bref'], 'Phrases': ['en fait', 'du coup', 'genre', 'en gros', 'tu vois', 'je veux dire', 'quoi'] },
+        de: { 'Häufig': ['äh', 'ähm', 'hm', 'naja', 'tja', 'halt', 'eben'], 'Phrasen': ['also', 'quasi', 'sozusagen', 'irgendwie', 'sag mal', 'weißt du', 'im Grunde'] },
+        pt: { 'Comuns': ['eh', 'ahm', 'hum', 'bem', 'bom', 'então'], 'Frases': ['tipo', 'tipo assim', 'sabe', 'entende', 'na verdade', 'sei lá', 'quer dizer'] },
+        ja: { '一般': ['えーと', 'あのー', 'えー', 'まあ', 'その', 'なんか', 'ほら'], 'フレーズ': ['っていうか', 'みたいな', 'なんていうか', 'ちょっと', 'ある意味'] },
+    };
 
     const settingsManager = {
         load() {
@@ -777,6 +785,42 @@
     
 
             // ═══ EXPORT CHAPTERS ═══
+            // ═══ SPONSORBLOCK INTEGRATION (optional) ═══
+            _sbSegments: null,
+            async _fetchSponsorBlockSegments(videoId) {
+                try {
+                    const resp = await fetch(`https://sponsor.ajay.app/api/skipSegments?videoID=${encodeURIComponent(videoId)}&categories=["sponsor","intro","outro","selfpromo","interaction","music_offtopic"]`);
+                    if (!resp.ok) { this._sbSegments = []; return; }
+                    const data = await resp.json();
+                    this._sbSegments = Array.isArray(data) ? data.map(s => ({
+                        start: s.segment?.[0] || 0,
+                        end: s.segment?.[1] || 0,
+                        category: s.category,
+                    })) : [];
+                    this._log('SponsorBlock:', this._sbSegments.length, 'segments for', videoId);
+                } catch(e) {
+                    this._sbSegments = [];
+                    this._log('SponsorBlock fetch failed:', e.message);
+                }
+            },
+
+            _refineBoundariesWithSB(data) {
+                if (!this._sbSegments?.length || !data?.chapters?.length) return;
+                for (const sb of this._sbSegments) {
+                    if (sb.category === 'intro' || sb.category === 'outro' || sb.category === 'sponsor') {
+                        const snapTo = sb.end;
+                        const existing = data.chapters.find(c => Math.abs(c.start - snapTo) < 30);
+                        if (existing && Math.abs(existing.start - snapTo) > 2) {
+                            this._log('SponsorBlock: snapped chapter boundary from', existing.start, 'to', snapTo, '(' + sb.category + ')');
+                            existing.start = Math.round(snapTo);
+                        }
+                    }
+                }
+                for (let i = 0; i < data.chapters.length; i++) {
+                    data.chapters[i].end = i < data.chapters.length - 1 ? data.chapters[i + 1].start : (this._getVideoDuration() || data.chapters[i].end);
+                }
+            },
+
             _exportChaptersYouTube() {
                 if (!this._chapterData?.chapters?.length) return;
                 const lines = this._chapterData.chapters.map(c => `${this._formatTime(c.start)} ${c.title}`);
@@ -1759,7 +1803,10 @@
                 if (this._isGenerating) return null;
                 this._isGenerating = true;
                 try {
-                    const segments = await this._fetchTranscript(videoId, onStatus);
+                    const [segments] = await Promise.all([
+                        this._fetchTranscript(videoId, onStatus),
+                        this._fetchSponsorBlockSegments(videoId),
+                    ]);
                     if (!segments?.length) {
                         onStatus?.('No transcript available', 'error', 0);
                         this._isGenerating = false; return null;
@@ -1767,8 +1814,9 @@
                     this._lastTranscriptSegments = segments;
                     const duration = this._getVideoDuration();
                     onStatus?.('Analyzing transcript...', 'loading', 60);
-                    const data = this._generateChaptersHeuristic(segments, duration);
+                    const data = await this._generateChaptersHeuristic(segments, duration);
                     if (data?.chapters?.length) {
+                        if (this._sbSegments?.length) this._refineBoundariesWithSB(data);
                         this._setCachedData(videoId, data);
                         onStatus?.(`Generated ${data.chapters.length} chapters, ${data.pois.length} POIs`, 'ready', 100);
                         this._isGenerating = false; return data;
@@ -1789,11 +1837,16 @@
 
             _fillerSetsCache: null,
             _fillerSetsCacheKey: null,
+            _detectedLang: 'en',
             _getFillerSets() {
                 const enabled = appState.settings.cfFillerWordsEnabled || {};
-                const cacheKey = ALL_FILLER_WORDS.map(w => enabled[w] ? '1' : '0').join('');
+                const cacheKey = ALL_FILLER_WORDS.map(w => enabled[w] ? '1' : '0').join('') + ':' + this._detectedLang;
                 if (this._fillerSetsCacheKey === cacheKey && this._fillerSetsCache) return this._fillerSetsCache;
                 const words = ALL_FILLER_WORDS.filter(w => enabled[w]);
+                const lang = this._detectedLang;
+                if (lang !== 'en' && FILLER_CATALOGS_I18N[lang]) {
+                    for (const catWords of Object.values(FILLER_CATALOGS_I18N[lang])) words.push(...catWords);
+                }
                 const simple = new Set();
                 const multi = [];
                 for (const w of words) {
@@ -2103,6 +2156,8 @@
 
             _runAnalysis(segments) {
                 if (!segments?.length) return;
+                this._detectedLang = this._detectTranscriptLanguage(segments);
+                this._fillerSetsCache = null;
                 if (appState.settings.cfFillerDetect) this._fillerData = this._detectFillers(segments);
                 // Detect pauses at finest granularity (0.5s) — AutoSkip filters by mode at runtime
                 this._pauseData = this._detectPauses(segments, 0.5);
