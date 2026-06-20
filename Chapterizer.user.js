@@ -1156,7 +1156,7 @@
     
             // ═══ NLP ENGINE (zero dependencies) ═══
 
-            // Stopwords for English — filter these from keyword extraction
+            _NLP_STOPS_ARRAY: ['the','and','that','this','with','for','are','was','were','been','have','has','had','not','but','what','all','can','her','his','from','they','will','one','its','also','just','more','about','would','there','their','which','could','other','than','then','these','some','them','into','only','your','when','very','most','over','such','after','know','like','going','right','think','really','want','well','here','look','make','come','how','did','get','got','say','said','because','way','still','being','those','where','back','does','take','much','many','through','before','should','each','between','must','same','thing','things','even','every','doing','something','anything','nothing','everything','need','let','see','yeah','yes','okay','actually','gonna','kind','sort','mean','basically','literally','stuff','pretty','little','whole','sure','probably','maybe','guess','though','enough','around','might','quite','able','always','never','already','again','another','talking','talk','people','called','start','started','going','really','actually','point','work','working','time','way','lot','part'],
             _NLP_STOPS: new Set(['the','and','that','this','with','for','are','was','were','been','have','has','had','not','but','what','all','can','her','his','from','they','will','one','its','also','just','more','about','would','there','their','which','could','other','than','then','these','some','them','into','only','your','when','very','most','over','such','after','know','like','going','right','think','really','want','well','here','look','make','come','how','did','get','got','say','said','because','way','still','being','those','where','back','does','take','much','many','through','before','should','each','between','must','same','thing','things','even','every','doing','something','anything','nothing','everything','need','let','see','yeah','yes','okay','actually','gonna','kind','sort','mean','basically','literally','stuff','pretty','little','whole','sure','probably','maybe','guess','though','enough','around','might','quite','able','always','never','already','again','another','talking','talk','people','called','start','started','going','really','actually','point','work','working','time','way','lot','part']),
 
             // Tokenize text into clean lowercase word array
@@ -1283,9 +1283,109 @@
                     .sort((a, b) => a.idx - b.idx); // restore document order
             },
 
+            // ═══ WEB WORKER FOR NLP COMPUTATION ═══
+            _nlpWorker: null,
+            _getNLPWorker() {
+                if (this._nlpWorker) return this._nlpWorker;
+                const stopwords = JSON.stringify(this._NLP_STOPS_ARRAY);
+                const workerCode = `
+                    const STOPS = new Set(${stopwords});
+                    function tokenize(text) { return text.toLowerCase().replace(/[^\\w\\s'-]/g, ' ').split(/\\s+/).filter(w => w.length > 2 && !/^\\d+$/.test(w)); }
+                    function bigrams(tokens) { const b = []; for (let i = 0; i < tokens.length - 1; i++) { const a = tokens[i], c = tokens[i+1]; if (!STOPS.has(a) && !STOPS.has(c) && a.length > 2 && c.length > 2) b.push(a + ' ' + c); } return b; }
+                    function tfidf(docs) {
+                        const N = docs.length, docTokens = docs.map(d => tokenize(d)), docBigrams = docTokens.map(t => bigrams(t)), df = {};
+                        for (let i = 0; i < N; i++) { const seen = new Set(); for (const t of docTokens[i]) { if (!STOPS.has(t)) seen.add(t); } for (const b of docBigrams[i]) seen.add(b); for (const term of seen) df[term] = (df[term] || 0) + 1; }
+                        const vectors = [];
+                        for (let i = 0; i < N; i++) { const tf = {}; const all = [...docTokens[i].filter(t => !STOPS.has(t)), ...docBigrams[i]]; const total = all.length || 1; for (const t of all) tf[t] = (tf[t] || 0) + 1; const vec = {}; for (const [term, count] of Object.entries(tf)) { const idf = Math.log(N / (df[term] || 1)); if (idf > 0.1) vec[term] = (count / total) * idf; } vectors.push(vec); }
+                        return vectors;
+                    }
+                    function cosine(a, b) { let dot = 0, nA = 0, nB = 0; for (const [k, v] of Object.entries(a)) { nA += v*v; if (b[k]) dot += v*b[k]; } for (const v of Object.values(b)) nB += v*v; const d = Math.sqrt(nA)*Math.sqrt(nB); return d > 0 ? dot/d : 0; }
+                    function keyPhrases(vec, n) { return Object.entries(vec).map(([t,s]) => ({term:t, score:s*(t.includes(' ')?1.5:1)})).sort((a,b)=>b.score-a.score).slice(0,n).map(e=>e.term); }
+                    function titleCase(phrase) { const minor = new Set(['a','an','the','and','or','but','in','on','at','to','for','of','by','with','vs']); return phrase.split(' ').map((w,i) => (i>0 && minor.has(w)) ? w : w.charAt(0).toUpperCase()+w.slice(1)).join(' '); }
+                    function textRank(sentences, topN) {
+                        if (sentences.length <= topN) return sentences.map((s,i) => ({text:s,idx:i,score:1}));
+                        const tok = sentences.map(s => new Set(tokenize(s).filter(t => !STOPS.has(t))));
+                        const scores = new Float64Array(sentences.length).fill(1);
+                        for (let iter = 0; iter < 15; iter++) {
+                            const ns = new Float64Array(sentences.length).fill(0.15);
+                            for (let i = 0; i < sentences.length; i++) { let ts = 0; const sims = new Float64Array(sentences.length); for (let j = 0; j < sentences.length; j++) { if (i===j) continue; const inter = [...tok[i]].filter(t=>tok[j].has(t)).length; const u = new Set([...tok[i],...tok[j]]).size; sims[j] = u>0?inter/u:0; ts+=sims[j]; } if (ts>0) for (let j = 0; j < sentences.length; j++) ns[j] += 0.85*(sims[j]/ts)*scores[i]; }
+                            for (let i = 0; i < sentences.length; i++) scores[i] = ns[i];
+                        }
+                        const pb = (idx) => idx<=1?1.3:(idx>=sentences.length-2?1.15:1.0);
+                        return Array.from(scores).map((s,i)=>({text:sentences[i],idx:i,score:s*pb(i)})).sort((a,b)=>b.score-a.score).slice(0,topN).sort((a,b)=>a.idx-b.idx);
+                    }
+                    function detectPOIs(segments, chapters, totalSecs) {
+                        const candidates = [];
+                        const emphRe = /\\b(important|key point|remember|crucial|breaking|announce|reveal|surprise|incredible|amazing|game.?changer|mind.?blow|breakthrough|discover|secret|tip|trick|hack|milestone|highlight|takeaway|essential|critical|warning|danger|careful|watch out|pay attention)\\b/i;
+                        const enumRe = /\\b(first(ly)?|second(ly)?|third(ly)?|step one|step two|number one|number two|finally|in conclusion|to summarize|the main|the biggest|the most|in summary|bottom line|key takeaway|most importantly)\\b/i;
+                        for (let i = 0; i < segments.length; i++) {
+                            const seg = segments[i]; let score = 0;
+                            if (emphRe.test(seg.text)) score += 4; if (enumRe.test(seg.text)) score += 3;
+                            const nearbyQ = segments.filter(s => Math.abs(s.start-seg.start)<60 && s.text.includes('?')).length; if (nearbyQ>=3) score+=2;
+                            if (i>0 && seg.start-segments[i-1].start>8) score+=2; if (seg.text.length>100) score+=1; if (seg.text.includes('!')) score+=1;
+                            const caps = seg.text.match(/\\b[A-Z][a-z]{2,}/g); if (caps && caps.length>=2) score+=1;
+                            if (score>=3) { let label = seg.text.trim(); const sents = label.split(/[.!?]+/).filter(s=>s.trim().length>10); if (sents.length>1) label = (sents.find(s=>emphRe.test(s)||enumRe.test(s))||sents[0]).trim(); if (label.length>70) label=label.slice(0,67)+'...'; candidates.push({time:Math.round(seg.start),label,score}); }
+                        }
+                        candidates.sort((a,b)=>b.score-a.score);
+                        const pois = [];
+                        for (const p of candidates) { if (pois.length>=6) break; if (pois.some(e=>Math.abs(e.time-p.time)<90)) continue; if (chapters.some(c=>Math.abs(c.start-p.time)<10)) continue; pois.push(p); }
+                        pois.sort((a,b)=>a.time-b.time);
+                        return pois;
+                    }
+                    self.onmessage = function(e) {
+                        const { segments, duration } = e.data;
+                        const totalSecs = duration || (segments[segments.length-1]?.start+30) || 300;
+                        const windowSize = 30, windows = [];
+                        for (const seg of segments) { const idx = Math.floor(seg.start/windowSize); while (windows.length<=idx) windows.push({start:windows.length*windowSize,texts:[]}); windows[idx].texts.push(seg.text); }
+                        const groupWindowCount = 2, groups = [];
+                        for (let i=0;i<windows.length;i+=groupWindowCount) { const sl=windows.slice(i,i+groupWindowCount); const t=sl.map(w=>w.texts.join(' ')).join(' '); if(t.trim()) groups.push({start:sl[0]?.start||0,text:t}); }
+                        if (groups.length<2) { self.postMessage({chapters:[{start:0,title:'Full Video',end:totalSecs}],pois:[]}); return; }
+                        const vectors = tfidf(groups.map(g=>g.text));
+                        const similarities = []; for (let i=1;i<groups.length;i++) similarities.push({idx:i,sim:cosine(vectors[i-1],vectors[i])});
+                        const sims = similarities.map(s=>s.sim); const sorted=[...sims].sort((a,b)=>a-b);
+                        const mean=sims.reduce((a,b)=>a+b,0)/sims.length; const std=Math.sqrt(sims.reduce((a,b)=>a+(b-mean)**2,0)/sims.length);
+                        const statTh=mean-0.5*std; const pctTh=sorted[Math.floor(sorted.length*0.25)]||0;
+                        const threshold=Math.max(0.05,Math.min(statTh,pctTh+0.05));
+                        const boundaries=[0];
+                        for (const {idx,sim} of similarities) { if (sim<threshold) { const last=groups[boundaries[boundaries.length-1]].start; if (groups[idx].start-last>=90) boundaries.push(idx); } }
+                        const tMin=Math.max(3,Math.floor(totalSecs/300)), tMax=Math.max(6,Math.ceil(totalSecs/180)), tCap=Math.min(tMax,15);
+                        while (boundaries.length>tCap) { let bm=1,bs=-1; for (let i=1;i<boundaries.length;i++) { const s=similarities.find(s=>s.idx===boundaries[i])?.sim??1; if(s>bs){bs=s;bm=i;} } boundaries.splice(bm,1); }
+                        if (boundaries.length<tMin && groups.length>=4) { const ud=similarities.filter(s=>!boundaries.includes(s.idx)&&s.sim<mean).sort((a,b)=>a.sim-b.sim); for (const d of ud) { if(boundaries.length>=tMin) break; const dt=groups[d.idx].start; if(!boundaries.some(bi=>Math.abs(groups[bi].start-dt)<60)){boundaries.push(d.idx);boundaries.sort((a,b)=>a-b);} } }
+                        const chapters = boundaries.map((bIdx,i) => {
+                            const endIdx=i<boundaries.length-1?boundaries[i+1]:groups.length; const mv={};
+                            for (let g=bIdx;g<endIdx;g++) for (const [t,s] of Object.entries(vectors[g])) mv[t]=(mv[t]||0)+s;
+                            const kp=keyPhrases(mv,4); let title;
+                            if (kp.length>=2) { if(kp[0].includes(' ')) title=titleCase(kp[0]); else if(kp[1].includes(' ')) title=titleCase(kp[1]); else title=titleCase(kp[0]+' '+kp[1]); if(title.length<10&&kp.length>=3){const ex=kp[2].includes(' ')?kp[2].split(' ')[0]:kp[2];title+=' '+titleCase(ex);} } else if(kp.length===1) title=titleCase(kp[0]); else title='Section '+(i+1);
+                            return {start:Math.round(groups[bIdx].start),title:title.slice(0,50)};
+                        });
+                        if (chapters.length&&chapters[0].start>5) chapters[0].start=0;
+                        for (let i=0;i<chapters.length;i++) chapters[i].end=i<chapters.length-1?chapters[i+1].start:totalSecs;
+                        const pois = detectPOIs(segments, chapters, totalSecs);
+                        self.postMessage({chapters, pois});
+                    };
+                `;
+                const blob = new Blob([workerCode], { type: 'application/javascript' });
+                this._nlpWorker = new Worker(URL.createObjectURL(blob));
+                return this._nlpWorker;
+            },
+
+            _runNLPInWorker(segments, duration) {
+                return new Promise((resolve) => {
+                    const worker = this._getNLPWorker();
+                    const handler = (e) => { worker.removeEventListener('message', handler); resolve(e.data); };
+                    worker.addEventListener('message', handler);
+                    worker.postMessage({ segments: segments.map(s => ({ start: s.start, text: s.text })), duration });
+                });
+            },
+
             // ═══ BUILT-IN HEURISTIC CHAPTER GENERATOR (TF-IDF + Cosine Similarity) ═══
-            _generateChaptersHeuristic(segments, duration) {
+            async _generateChaptersHeuristic(segments, duration) {
                 this._log('NLP heuristic generator:', segments.length, 'segments');
+                try {
+                    return await this._runNLPInWorker(segments, duration);
+                } catch(e) {
+                    this._log('Worker failed, falling back to main thread:', e.message);
+                }
                 const totalSecs = duration || segments[segments.length - 1]?.start + 30 || 300;
 
                 // ── Step 1: Build time-windowed documents (30-second windows) ──
@@ -1756,8 +1856,10 @@
                                         video.playbackRate = preset.silenceSpeed;
                                     }
                                 } else {
+                                    const priorTime = ct;
                                     video.currentTime = zone.end + 0.05;
                                     self._autoSkipZoneIdx++;
+                                    showToast(`Skipped ${zone.type}`, '#6366f1', { duration: 1.5, action: { text: 'Undo', onClick: () => { video.currentTime = priorTime; } } });
                                 }
                                 self._playbackLoopRAF = requestAnimationFrame(tick);
                                 return;
@@ -2202,6 +2304,11 @@
                         <div class="cf-section-label">Cache</div>
                         <div class="cf-settings-row"><span class="cf-settings-label">Cached</span><span style="font-size:12px;color:rgba(255,255,255,0.4)">${this._countCache()} chapters</span></div>
                         <button class="cf-clear-btn" id="cf-clear-cache">Clear All Cache</button>
+                        <div class="cf-section-label">Settings Backup</div>
+                        <div style="display:flex;gap:6px">
+                            <button class="cf-action-btn" id="cf-export-settings">Export</button>
+                            <button class="cf-action-btn" id="cf-import-settings">Import</button>
+                        </div>
                     `;
                 }
 
@@ -2303,6 +2410,38 @@
                     self._chapterData = null;
                     self._renderPanel();
                     self._renderProgressBarOverlay();
+                });
+
+                this._panelEl.querySelector('#cf-export-settings')?.addEventListener('click', () => {
+                    const data = JSON.stringify(appState.settings, null, 2);
+                    const blob = new Blob([data], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url; a.download = 'chapterizer-settings.json';
+                    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    showToast('Settings exported', '#10b981');
+                });
+                this._panelEl.querySelector('#cf-import-settings')?.addEventListener('click', () => {
+                    const input = document.createElement('input');
+                    input.type = 'file'; input.accept = '.json';
+                    input.onchange = () => {
+                        const file = input.files?.[0];
+                        if (!file) return;
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                            try {
+                                const imported = JSON.parse(reader.result);
+                                if (typeof imported !== 'object' || imported === null) throw new Error('Invalid');
+                                appState.settings = { ...DEFAULTS, ...imported };
+                                settingsManager.save(appState.settings);
+                                self._renderPanel();
+                                showToast('Settings imported', '#10b981');
+                            } catch(e) { showToast('Invalid settings file', '#ef4444'); }
+                        };
+                        reader.readAsText(file);
+                    };
+                    input.click();
                 });
             },
 
@@ -2641,6 +2780,7 @@
             destroy() {
                 this._stopChapterTracking();
                 this._stopAutoSkip();
+                if (this._nlpWorker) { this._nlpWorker.terminate(); this._nlpWorker = null; }
                 this._chapterHUDEl?.remove(); this._chapterHUDEl = null;
                 if (this._navHandler) document.removeEventListener('yt-navigate-finish', this._navHandler);
                 if (this._clickHandler) document.removeEventListener('click', this._clickHandler);
