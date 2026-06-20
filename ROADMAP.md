@@ -71,12 +71,12 @@
   Acceptance: Cache survives beyond 20 entries; least-recently-accessed entries are evicted first; old localStorage cache migrated on first run
   Complexity: M
 
-- [ ] P2 — Web Audio API silence detection
-  Why: Current pause detection relies solely on transcript segment gaps (line 1546-1559); actual audio silence between words isn't detected, producing false positives where the speaker pauses but the transcript has no gap
-  Evidence: Descript, Gling, and TimeBolt all use audio waveform analysis for silence detection; Web Audio API's AnalyserNode provides real-time frequency/volume data in-browser with no external dependency
-  Touches: `Chapterizer.user.js` — new `_detectSilenceAudio` method using `AudioContext` + `AnalyserNode` on the video element; merge results with transcript-based pause detection
-  Acceptance: AutoSkip correctly identifies actual silent moments even when transcript segments are continuous; fewer false-positive skips
-  Complexity: L
+- [ ] P2 — Improved silence detection via transcript gap heuristics
+  Why: Current pause detection relies solely on raw segment gaps (line 1546-1559); could be improved with word-level timing gap analysis within segments and cross-referencing with speech pace data
+  Evidence: Web Audio API (`createMediaElementSource`) is blocked by YouTube's CORS policy on the `<video>` element — audio-level RMS analysis is not feasible in a userscript. However, word-level timing from JSON3 format (already extracted) can detect intra-segment pauses that inter-segment gap analysis misses. Commercial tools (TimeBolt, Recut) use audio waveform analysis but that path is blocked here.
+  Touches: `Chapterizer.user.js` — `_detectPauses` (analyze word-level timing gaps within segments, not just between segments); `_detectFillers` (use word timing gaps to distinguish filler-adjacent pauses from natural breathing pauses)
+  Acceptance: Pause detection catches mid-segment silences visible in word-level timing; fewer false-positive skips from natural breathing pauses
+  Complexity: M
 
 - [ ] P2 — Settings export/import
   Why: All settings stored in GM storage with no backup mechanism; clearing browser data or switching machines loses all configuration
@@ -112,6 +112,20 @@
   Touches: `Chapterizer.user.js` — `_generateChaptersHeuristic` (implement two-pass approach: coarse 120s windows for videos >45min, then refine boundaries with 60s windows around detected breaks)
   Acceptance: 2-hour video generates chapters in <2 seconds with meaningful topic boundaries; 15-min videos are unaffected
   Complexity: M
+
+- [ ] P2 — Formalize depth-score valley detection for topic boundaries
+  Why: Current threshold-based boundary detection (line 1246-1268) uses raw cosine similarity drops; TextTiling's depth-score algorithm measures how deep a similarity valley is relative to surrounding peaks, producing higher-confidence boundaries
+  Evidence: TextTiling (Hearst 1997) is the gold standard for unsupervised text segmentation; Chapterizer's approach is already close but lacks the relative-depth scoring that distinguishes strong boundaries from noise
+  Touches: `Chapterizer.user.js` — `_generateChaptersHeuristic` step 4 (replace raw threshold comparison with depth-score computation across similarity valleys)
+  Acceptance: Chapter boundaries are placed at stronger topic shifts; fewer spurious splits in monotopic sections; long videos with gradual topic drift get better segmentation
+  Complexity: M
+
+- [ ] P2 — Auto-detect transcript language for NLP pipeline
+  Why: Multi-language stopword support (P1) needs to know which language to filter; currently assumes English with no detection
+  Evidence: `franc` library detects 82-419 languages in ~50KB; TF-IDF + cosine similarity is language-agnostic once stopwords are removed — only preprocessing needs per-language handling
+  Touches: `Chapterizer.user.js` — new `_detectLanguage` method using franc on first ~500 chars of transcript; `_generateChaptersHeuristic` selects stopword set based on detected language
+  Acceptance: Chapter generation on a Spanish/French/German video automatically uses the correct stopword list without user configuration
+  Complexity: S
 
 ### P3 — Lower Priority / Under Consideration
 

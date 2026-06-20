@@ -104,6 +104,7 @@ The highest-value opportunities in priority order:
 | Video download / offline processing | Outside scope; use case is in-browser real-time enhancement | youtube-dl |
 | Real-time speech-to-text (Whisper in browser) | Too heavy for a userscript; WASM Whisper exists but is 150MB+ and slow | whisper.cpp |
 | Chrome Web Store extension port | Viable long-term but userscript reach is broader across browsers; MV3 restrictions on content scripts add complexity | CWS ecosystem |
+| Web Audio API silence detection | YouTube's CORS policy blocks `createMediaElementSource()` on the `<video>` element; `captureStream()` also blocked by EME/DRM. Audio-level RMS analysis is not feasible in a userscript | Web Audio API spec, WebAudio/web-audio-api#2453 |
 | Ad blocking / sponsor blocking | Well-served by uBlock Origin + SponsorBlock; adding this would bloat scope and invite legal risk | Enhancer for YouTube |
 | Playback speed controls | Already native to YouTube; duplicating this adds no value | ImprovedTube |
 | Video quality auto-selection | Off-topic; YouTube enhancer feature, not a chapter tool | ImprovedTube |
@@ -130,6 +131,16 @@ The highest-value opportunities in priority order:
 - https://www.reddit.com/r/youtube/ (chapter generation feature requests)
 - https://www.reddit.com/r/userscripts/ (userscript ecosystem)
 - https://support.google.com/youtube/answer/9884579 (YouTube auto-chapters)
+
+### NLP Libraries & Techniques
+- https://github.com/winkjs/wink-nlp (browser-ready NLP, 650K tokens/sec)
+- https://github.com/wooorm/franc (language detection, 82-419 languages)
+- https://github.com/stopwords-iso/stopwords-iso (stopword lists for 62 languages)
+- https://aclanthology.org/J97-1003.pdf (TextTiling — depth-score segmentation)
+
+### Podcast Chapter Formats
+- https://podlove.org/simple-chapters/ (Podlove Simple Chapters spec)
+- https://podcasting2.org/docs/podcast-namespace/tags/chapters (Podcasting 2.0 JSON chapters)
 
 ### Standards / APIs
 - https://developer.mozilla.org/en-US/docs/Web/API/MediaSession (MediaSession API chapters)
