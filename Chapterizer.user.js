@@ -635,27 +635,116 @@
             _seekTo(seconds) { const v = document.querySelector('video.html5-main-video'); if (v) v.currentTime = seconds; },
             _getVideoDuration() { const v = document.querySelector('video.html5-main-video'); return v ? v.duration : 0; },
             _CF_CACHE_VERSION: 1,
-            _getCachedData(videoId) {
-                try {
-                    const raw = localStorage.getItem(this._CF_CACHE_PREFIX + videoId);
-                    if (!raw) return null;
-                    const parsed = JSON.parse(raw);
-                    if (!parsed || parsed._v !== this._CF_CACHE_VERSION || !Array.isArray(parsed.chapters) || !parsed.chapters.length) {
-                        localStorage.removeItem(this._CF_CACHE_PREFIX + videoId);
-                        return null;
-                    }
-                    return parsed;
-                } catch { localStorage.removeItem(this._CF_CACHE_PREFIX + videoId); return null; }
+            _CF_IDB_NAME: 'chapterizer_cache',
+            _CF_IDB_STORE: 'chapters',
+            _CF_IDB_MAX: 100,
+            _idb: null,
+            _idbReady: null,
+
+            _openIDB() {
+                if (this._idbReady) return this._idbReady;
+                this._idbReady = new Promise((resolve) => {
+                    try {
+                        const req = indexedDB.open(this._CF_IDB_NAME, 1);
+                        req.onupgradeneeded = (e) => {
+                            const db = e.target.result;
+                            if (!db.objectStoreNames.contains(this._CF_IDB_STORE)) {
+                                db.createObjectStore(this._CF_IDB_STORE, { keyPath: 'videoId' });
+                            }
+                        };
+                        req.onsuccess = (e) => { this._idb = e.target.result; this._migrateLocalStorage(); resolve(this._idb); };
+                        req.onerror = () => resolve(null);
+                    } catch(e) { resolve(null); }
+                });
+                return this._idbReady;
             },
-            _setCachedData(videoId, data) {
-                const versioned = { ...data, _v: this._CF_CACHE_VERSION };
-                try { localStorage.setItem(this._CF_CACHE_PREFIX + videoId, JSON.stringify(versioned)); } catch(e) {
-                    const keys = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.startsWith(this._CF_CACHE_PREFIX)) keys.push(k); }
-                    if (keys.length > 20) { keys.slice(0, 5).forEach(k => localStorage.removeItem(k)); try { localStorage.setItem(this._CF_CACHE_PREFIX + videoId, JSON.stringify(versioned)); } catch(e2) {} }
+
+            _migrateLocalStorage() {
+                const keys = [];
+                for (let i = 0; i < localStorage.length; i++) {
+                    const k = localStorage.key(i);
+                    if (k?.startsWith(this._CF_CACHE_PREFIX)) keys.push(k);
+                }
+                if (!keys.length || !this._idb) return;
+                const tx = this._idb.transaction(this._CF_IDB_STORE, 'readwrite');
+                const store = tx.objectStore(this._CF_IDB_STORE);
+                for (const k of keys) {
+                    try {
+                        const data = JSON.parse(localStorage.getItem(k));
+                        if (data?.chapters?.length) {
+                            const videoId = k.slice(this._CF_CACHE_PREFIX.length);
+                            store.put({ videoId, data, _v: this._CF_CACHE_VERSION, _ts: Date.now() });
+                        }
+                        localStorage.removeItem(k);
+                    } catch(e) { localStorage.removeItem(k); }
                 }
             },
-            _countCache() { let c = 0; for (let i = 0; i < localStorage.length; i++) { if (localStorage.key(i).startsWith(this._CF_CACHE_PREFIX)) c++; } return c; },
-            _clearCache() { const keys = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.startsWith(this._CF_CACHE_PREFIX)) keys.push(k); } keys.forEach(k => localStorage.removeItem(k)); },
+
+            async _getCachedData(videoId) {
+                const db = await this._openIDB();
+                if (!db) return null;
+                return new Promise((resolve) => {
+                    try {
+                        const tx = db.transaction(this._CF_IDB_STORE, 'readonly');
+                        const req = tx.objectStore(this._CF_IDB_STORE).get(videoId);
+                        req.onsuccess = () => {
+                            const row = req.result;
+                            if (!row || row._v !== this._CF_CACHE_VERSION || !row.data?.chapters?.length) { resolve(null); return; }
+                            const utx = db.transaction(this._CF_IDB_STORE, 'readwrite');
+                            utx.objectStore(this._CF_IDB_STORE).put({ ...row, _ts: Date.now() });
+                            resolve(row.data);
+                        };
+                        req.onerror = () => resolve(null);
+                    } catch(e) { resolve(null); }
+                });
+            },
+            async _setCachedData(videoId, data) {
+                const db = await this._openIDB();
+                if (!db) return;
+                try {
+                    const tx = db.transaction(this._CF_IDB_STORE, 'readwrite');
+                    const store = tx.objectStore(this._CF_IDB_STORE);
+                    store.put({ videoId, data, _v: this._CF_CACHE_VERSION, _ts: Date.now() });
+                    const countReq = store.count();
+                    countReq.onsuccess = () => {
+                        if (countReq.result > this._CF_IDB_MAX) {
+                            const cursorReq = store.openCursor();
+                            const toDelete = countReq.result - this._CF_IDB_MAX;
+                            const entries = [];
+                            cursorReq.onsuccess = (e) => {
+                                const cursor = e.target.result;
+                                if (cursor) { entries.push({ key: cursor.key, ts: cursor.value._ts || 0 }); cursor.continue(); }
+                                else {
+                                    entries.sort((a, b) => a.ts - b.ts);
+                                    const evictTx = db.transaction(this._CF_IDB_STORE, 'readwrite');
+                                    const evictStore = evictTx.objectStore(this._CF_IDB_STORE);
+                                    entries.slice(0, toDelete).forEach(e => evictStore.delete(e.key));
+                                }
+                            };
+                        }
+                    };
+                } catch(e) {}
+            },
+            async _countCache() {
+                const db = await this._openIDB();
+                if (!db) return 0;
+                return new Promise((resolve) => {
+                    try {
+                        const tx = db.transaction(this._CF_IDB_STORE, 'readonly');
+                        const req = tx.objectStore(this._CF_IDB_STORE).count();
+                        req.onsuccess = () => resolve(req.result);
+                        req.onerror = () => resolve(0);
+                    } catch(e) { resolve(0); }
+                });
+            },
+            async _clearCache() {
+                const db = await this._openIDB();
+                if (!db) return;
+                try {
+                    const tx = db.transaction(this._CF_IDB_STORE, 'readwrite');
+                    tx.objectStore(this._CF_IDB_STORE).clear();
+                } catch(e) {}
+            },
     
 
             // ═══ EXPORT CHAPTERS ═══
@@ -2365,7 +2454,7 @@
                         <div class="cf-settings-row"><span class="cf-settings-label">Filler Markers</span>${_toggle('cfShowFillerMarkers')}</div>
                         <div class="cf-settings-row"><span class="cf-settings-label">Debug Logging</span>${_toggle('cfDebugLog')}</div>
                         <div class="cf-section-label">Cache</div>
-                        <div class="cf-settings-row"><span class="cf-settings-label">Cached</span><span style="font-size:12px;color:rgba(255,255,255,0.4)">${this._countCache()} chapters</span></div>
+                        <div class="cf-settings-row"><span class="cf-settings-label">Cached</span><span id="cf-cache-count" style="font-size:12px;color:rgba(255,255,255,0.4)">… chapters</span></div>
                         <button class="cf-clear-btn" id="cf-clear-cache">Clear All Cache</button>
                         <div class="cf-section-label">Settings Backup</div>
                         <div style="display:flex;gap:6px">
@@ -2468,8 +2557,12 @@
                 _bindToggle('cfShowFillerMarkers');
                 _bindToggle('cfDebugLog');
 
-                this._panelEl.querySelector('#cf-clear-cache')?.addEventListener('click', () => {
-                    self._clearCache();
+                this._countCache().then(c => {
+                    const el = document.getElementById('cf-cache-count');
+                    if (el) el.textContent = c + ' chapters';
+                });
+                this._panelEl.querySelector('#cf-clear-cache')?.addEventListener('click', async () => {
+                    await self._clearCache();
                     self._chapterData = null;
                     self._renderPanel();
                     self._renderProgressBarOverlay();
@@ -2602,8 +2695,9 @@
                 this._stopChapterTracking();
                 this._chapterHUDEl?.remove();
                 this._chapterHUDEl = null;
-                const cached = this._getCachedData(videoId);
-                if (cached) this._chapterData = cached;
+                this._getCachedData(videoId).then(cached => {
+                    if (cached && this._currentVideoId === videoId) this._chapterData = cached;
+                });
 
                 this._waitForPlayer().then(() => {
                     this._currentDuration = this._getVideoDuration();
