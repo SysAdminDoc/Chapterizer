@@ -1,0 +1,27 @@
+# AI agent artifacts
+CLAUDE.md
+CODEX_CHANGELOG.md
+.claude/
+AGENTS.md
+
+# Research/planning (gitignored — lives in working tree only)
+ROADMAP.md
+RESEARCH.md
+LOGO_PROMPTS.md
+Roadmap_Blocked.md
+
+# Node
+node_modules/
+package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/

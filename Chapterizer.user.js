@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chapterizer
 // @namespace    https://github.com/SysAdminDoc
-// @version      3.0.0
+// @version      3.1.0
 // @updateURL    https://raw.githubusercontent.com/SysAdminDoc/Chapterizer/main/Chapterizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/SysAdminDoc/Chapterizer/main/Chapterizer.user.js
 // @description  Auto-generates chapters, detects filler words & skips pauses on YouTube. Works instantly - no setup, no servers, no API keys.
@@ -22,7 +22,7 @@
 (function() {
     'use strict';
 
-    const SCRIPT_VERSION = '3.0.0';
+    const SCRIPT_VERSION = '3.1.0';
     const SETTINGS_KEY = 'chapterizer_settings';
 
     // ══════════════════════════════════════════════════════════════
@@ -605,6 +605,7 @@
             _autoSkipSavedRate: null,      // saved playback rate before silence speedup
             _paceData: null,               // [{start, end, wpm}] speech pace per segment
             _keywordsPerChapter: null,     // [[keyword,...], ...] per chapter
+            _fetchAbortController: null,   // AbortController for in-flight transcript fetches
 
             _CF_CACHE_PREFIX: 'cf_cache_',
             _CF_TRANSCRIPT_PREFIX: 'cf_tx_',
@@ -635,11 +636,24 @@
             },
             _seekTo(seconds) { const v = document.querySelector('video.html5-main-video'); if (v) v.currentTime = seconds; },
             _getVideoDuration() { const v = document.querySelector('video.html5-main-video'); return v ? v.duration : 0; },
-            _getCachedData(videoId) { try { const raw = localStorage.getItem(this._CF_CACHE_PREFIX + videoId); return raw ? JSON.parse(raw) : null; } catch { return null; } },
+            _CF_CACHE_VERSION: 1,
+            _getCachedData(videoId) {
+                try {
+                    const raw = localStorage.getItem(this._CF_CACHE_PREFIX + videoId);
+                    if (!raw) return null;
+                    const parsed = JSON.parse(raw);
+                    if (!parsed || parsed._v !== this._CF_CACHE_VERSION || !Array.isArray(parsed.chapters) || !parsed.chapters.length) {
+                        localStorage.removeItem(this._CF_CACHE_PREFIX + videoId);
+                        return null;
+                    }
+                    return parsed;
+                } catch { localStorage.removeItem(this._CF_CACHE_PREFIX + videoId); return null; }
+            },
             _setCachedData(videoId, data) {
-                try { localStorage.setItem(this._CF_CACHE_PREFIX + videoId, JSON.stringify(data)); } catch(e) {
+                const versioned = { ...data, _v: this._CF_CACHE_VERSION };
+                try { localStorage.setItem(this._CF_CACHE_PREFIX + videoId, JSON.stringify(versioned)); } catch(e) {
                     const keys = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.startsWith(this._CF_CACHE_PREFIX)) keys.push(k); }
-                    if (keys.length > 20) { keys.slice(0, 5).forEach(k => localStorage.removeItem(k)); try { localStorage.setItem(this._CF_CACHE_PREFIX + videoId, JSON.stringify(data)); } catch(e2) {} }
+                    if (keys.length > 20) { keys.slice(0, 5).forEach(k => localStorage.removeItem(k)); try { localStorage.setItem(this._CF_CACHE_PREFIX + videoId, JSON.stringify(versioned)); } catch(e2) {} }
                 }
             },
             _countCache() { let c = 0; for (let i = 0; i < localStorage.length; i++) { if (localStorage.key(i).startsWith(this._CF_CACHE_PREFIX)) c++; } return c; },
@@ -658,6 +672,9 @@
             //  TRANSCRIPT FETCHER
             // ═══════════════════════════════════════════
             async _fetchTranscript(videoId, onStatus) {
+                if (this._fetchAbortController) this._fetchAbortController.abort();
+                this._fetchAbortController = new AbortController();
+                const signal = this._fetchAbortController.signal;
                 this._log('=== Fetching transcript for:', videoId, ' ===');
                 onStatus?.('Fetching transcript...', 'loading', 5);
     
@@ -849,6 +866,7 @@
                     this._log('DOM scrape failed:', e.message);
                 }
     
+                if (signal.aborted) { this._log('Transcript fetch aborted for:', videoId); return null; }
                 this._warn('ALL transcript methods failed for video:', videoId);
                 return null;
             },
@@ -900,7 +918,70 @@
                 this._log('All caption download methods failed for track:', track.languageCode);
                 return null;
             },
-    
+
+            // GM_xmlhttpRequest wrapper — GET request returning response text
+            _gmGet(url, extraHeaders = {}) {
+                return new Promise((resolve, reject) => {
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url,
+                        headers: { 'Accept': '*/*', ...extraHeaders },
+                        onload: (resp) => {
+                            if (resp.status >= 200 && resp.status < 400) resolve(resp.responseText || '');
+                            else reject(new Error(`GM GET ${resp.status} for ${url.slice(0, 80)}`));
+                        },
+                        onerror: (err) => reject(new Error('GM GET network error')),
+                        ontimeout: () => reject(new Error('GM GET timeout')),
+                        timeout: 15000,
+                    });
+                });
+            },
+
+            // GM_xmlhttpRequest wrapper — POST JSON, returns parsed response
+            _gmPostJson(url, body, extraHeaders = {}) {
+                return new Promise((resolve, reject) => {
+                    GM_xmlhttpRequest({
+                        method: 'POST',
+                        url,
+                        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', ...extraHeaders },
+                        data: JSON.stringify(body),
+                        onload: (resp) => {
+                            try { resolve(JSON.parse(resp.responseText)); }
+                            catch(e) { reject(new Error('GM POST JSON parse failed')); }
+                        },
+                        onerror: (err) => reject(new Error('GM POST network error')),
+                        ontimeout: () => reject(new Error('GM POST timeout')),
+                        timeout: 15000,
+                    });
+                });
+            },
+
+            // Build SAPISIDHASH authorization header from YouTube cookies
+            async _buildSapisidAuth() {
+                try {
+                    const cookies = document.cookie.split(';').reduce((acc, c) => {
+                        const [k, ...v] = c.trim().split('=');
+                        acc[k] = v.join('=');
+                        return acc;
+                    }, {});
+                    const sapisid = cookies['SAPISID'] || cookies['__Secure-3PAPISID'];
+                    if (!sapisid) return null;
+                    const origin = 'https://www.youtube.com';
+                    const timestamp = Math.floor(Date.now() / 1000);
+                    const input = `${timestamp} ${sapisid} ${origin}`;
+                    const msgBuffer = new TextEncoder().encode(input);
+                    const hashBuffer = await crypto.subtle.digest('SHA-1', msgBuffer);
+                    const hashHex = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+                    return {
+                        'Authorization': `SAPISIDHASH ${timestamp}_${hashHex}`,
+                        'X-Origin': origin,
+                        'X-Youtube-Client-Name': '1',
+                    };
+                } catch(e) {
+                    return null;
+                }
+            },
+
             _parseCaptionResponse(text, fmt) {
                 if (fmt === 'json3') {
                     try {
@@ -2285,6 +2366,7 @@
                 const statusBar = document.getElementById('cf-status-bar');
                 if (statusBar) statusBar.style.display = 'block';
                 const data = await this._generateChapters(videoId, (t, s, p) => this._updateStatus(t, s, p));
+                if (this._currentVideoId !== videoId) { this._log('Discarding stale generation result for:', videoId); return; }
                 if (data) {
                     this._chapterData = data;
                     this._currentDuration = this._getVideoDuration();
@@ -2318,6 +2400,7 @@
                 if (!videoId || videoId === this._currentVideoId) return;
                 if (!window.location.pathname.startsWith('/watch')) return;
                 this._currentVideoId = videoId;
+                if (this._fetchAbortController) { this._fetchAbortController.abort(); this._fetchAbortController = null; }
                 this._chapterData = null;
                 this._lastTranscriptSegments = null;
                 this._lastActiveChapterIdx = -1;
