@@ -596,11 +596,9 @@
             _navHandler: null,
             _barObsHandler: null,
             _chapterHUDEl: null,
-            _chapterTrackingRAF: null,
             _lastActiveChapterIdx: -1,
             _fillerData: null,             // [{time, duration, word, segStart, segEnd}] detected filler words
             _pauseData: null,              // [{start, end, duration}] detected pauses
-            _autoSkipRAF: null,            // single RAF handle for unified skip loop
             _autoSkipActive: false,        // whether autoskip is currently running
             _autoSkipSavedRate: null,      // saved playback rate before silence speedup
             _paceData: null,               // [{start, end, wpm}] speech pace per segment
@@ -1513,9 +1511,12 @@
             //  OpenCut-inspired Analysis Engine (browser-native)
             // ═══════════════════════════════════════════════════════
 
-            // Filler word detection — user-editable via cfFillerWordsEnabled setting
+            _fillerSetsCache: null,
+            _fillerSetsCacheKey: null,
             _getFillerSets() {
                 const enabled = appState.settings.cfFillerWordsEnabled || {};
+                const cacheKey = ALL_FILLER_WORDS.map(w => enabled[w] ? '1' : '0').join('');
+                if (this._fillerSetsCacheKey === cacheKey && this._fillerSetsCache) return this._fillerSetsCache;
                 const words = ALL_FILLER_WORDS.filter(w => enabled[w]);
                 const simple = new Set();
                 const multi = [];
@@ -1527,12 +1528,13 @@
                         simple.add(w);
                     }
                 }
-                // "like" with comma is a special case (filler "like," vs normal "like")
                 if (simple.has('like')) {
                     simple.delete('like');
                     multi.push({ pattern: /\b(like)\s*[,]/gi, word: 'like' });
                 }
-                return { simple, multi };
+                this._fillerSetsCache = { simple, multi };
+                this._fillerSetsCacheKey = cacheKey;
+                return this._fillerSetsCache;
             },
 
             _detectFillers(segments) {
@@ -1647,26 +1649,16 @@
                 this._pauseData = this._detectPauses(this._lastTranscriptSegments, threshold);
             },
 
-            // Unified skip loop — one RAF handles both pause and filler skipping
-            _startAutoSkip() {
-                if (this._autoSkipRAF) return;
+            // Build skip zones from current pauses + fillers for the active auto-skip preset
+            _buildSkipZones() {
                 const preset = this._getAutoSkipPreset();
-                if (!preset) return;
-                this._autoSkipActive = true;
-
-                // Recompute pauses for this aggression level
+                if (!preset) { this._autoSkipZones = null; return; }
                 this._recomputePauses();
-
-                // Build a sorted skip list: [{start, end, type}]
-                // This lets us binary-search instead of scanning every filler/pause per frame
                 const skipZones = [];
                 if (this._pauseData?.length) {
-                    for (const p of this._pauseData) {
-                        skipZones.push({ start: p.start, end: p.end, type: 'pause' });
-                    }
+                    for (const p of this._pauseData) skipZones.push({ start: p.start, end: p.end, type: 'pause' });
                 }
                 if (preset.skipFillers && this._fillerData?.length) {
-                    // Nasal fillers like "um"/"uh" have a longer onset — need more pre-buffer
                     const preBuffer = { um: 0.35, uh: 0.35, umm: 0.35, uhh: 0.35, hmm: 0.3 };
                     const defaultBuffer = 0.15;
                     for (const f of this._fillerData) {
@@ -1674,92 +1666,116 @@
                             const buf = preBuffer[f.word] || defaultBuffer;
                             skipZones.push({ start: Math.max(f.time - buf, 0), end: f.end, type: 'filler' });
                         } else {
-                            // Interpolated fallback: use wider window
-                            const windowStart = Math.max(f.time - 1.0, f.segStart);
-                            const windowEnd = Math.min(f.time + f.duration + 0.5, f.segEnd);
-                            skipZones.push({ start: windowStart, end: windowEnd, type: 'filler' });
+                            skipZones.push({ start: Math.max(f.time - 1.0, f.segStart), end: Math.min(f.time + f.duration + 0.5, f.segEnd), type: 'filler' });
                         }
                     }
                 }
                 skipZones.sort((a, b) => a.start - b.start);
-
-                // Merge overlapping zones
                 const merged = [];
                 for (const z of skipZones) {
                     const last = merged[merged.length - 1];
                     if (last && z.start <= last.end + 0.2) {
                         last.end = Math.max(last.end, z.end);
-                        if (z.type === 'pause') last.type = 'pause'; // pause takes priority for speedup
+                        if (z.type === 'pause') last.type = 'pause';
                     } else {
                         merged.push({ ...z });
                     }
                 }
-
-                this._log('AutoSkip started:', merged.length, 'skip zones (mode:', appState.settings.cfAutoSkipMode + ')');
                 this._autoSkipZones = merged;
+                this._autoSkipZoneIdx = 0;
+                this._log('AutoSkip zones built:', merged.length, '(mode:', appState.settings.cfAutoSkipMode + ')');
+            },
 
-                let zoneIdx = 0; // cursor for binary-search optimization
-                const silenceSpeed = preset.silenceSpeed;
-                const self = this;
-
-                const tick = () => {
-                    if (!self._autoSkipActive) return;
-                    const video = document.querySelector('video.html5-main-video');
-                    if (!video || video.paused) {
-                        self._autoSkipRAF = requestAnimationFrame(tick);
-                        return;
-                    }
-
-                    const ct = video.currentTime;
-
-                    // Reset cursor if we seeked backwards
-                    if (zoneIdx > 0 && merged[zoneIdx - 1]?.end > ct + 1) zoneIdx = 0;
-
-                    // Advance cursor to current position
-                    while (zoneIdx < merged.length && merged[zoneIdx].end <= ct) zoneIdx++;
-
-                    // Check if we're inside a skip zone
-                    if (zoneIdx < merged.length) {
-                        const zone = merged[zoneIdx];
-                        if (ct >= zone.start && ct < zone.end) {
-                            if (zone.type === 'pause' && silenceSpeed) {
-                                // Aggressive mode: speed through silence instead of hard skip
-                                if (self._autoSkipSavedRate === null) {
-                                    self._autoSkipSavedRate = video.playbackRate;
-                                    video.playbackRate = silenceSpeed;
-                                }
-                            } else {
-                                // Hard skip past the zone
-                                video.currentTime = zone.end + 0.05;
-                                zoneIdx++;
-                            }
-                            self._autoSkipRAF = requestAnimationFrame(tick);
-                            return;
-                        }
-                    }
-
-                    // Not in a skip zone — restore normal speed if we were speeding through silence
-                    if (self._autoSkipSavedRate !== null) {
-                        video.playbackRate = self._autoSkipSavedRate;
-                        self._autoSkipSavedRate = null;
-                    }
-
-                    self._autoSkipRAF = requestAnimationFrame(tick);
-                };
-
-                this._autoSkipRAF = requestAnimationFrame(tick);
+            _startAutoSkip() {
+                const preset = this._getAutoSkipPreset();
+                if (!preset) return;
+                this._autoSkipActive = true;
+                this._buildSkipZones();
+                this._ensurePlaybackLoop();
             },
 
             _stopAutoSkip() {
                 this._autoSkipActive = false;
-                if (this._autoSkipRAF) { cancelAnimationFrame(this._autoSkipRAF); this._autoSkipRAF = null; }
-                // Restore playback rate if we were speeding through silence
                 if (this._autoSkipSavedRate !== null) {
                     const video = document.querySelector('video.html5-main-video');
                     if (video) video.playbackRate = this._autoSkipSavedRate;
                     this._autoSkipSavedRate = null;
                 }
                 this._autoSkipZones = null;
+                this._autoSkipZoneIdx = 0;
+                if (!this._chapterTrackingActive) this._stopPlaybackLoop();
+            },
+
+            // ═══ UNIFIED PLAYBACK LOOP — single RAF for chapter tracking + auto-skip ═══
+            _playbackLoopRAF: null,
+            _chapterTrackingActive: false,
+            _autoSkipZoneIdx: 0,
+
+            _ensurePlaybackLoop() {
+                if (this._playbackLoopRAF) return;
+                const self = this;
+                const tick = () => {
+                    if (!self._chapterTrackingActive && !self._autoSkipActive) { self._playbackLoopRAF = null; return; }
+                    const video = document.querySelector('video.html5-main-video');
+                    if (!video || video.paused) {
+                        self._playbackLoopRAF = requestAnimationFrame(tick);
+                        return;
+                    }
+                    const ct = video.currentTime;
+
+                    // ── Chapter tracking ──
+                    if (self._chapterTrackingActive && self._chapterData?.chapters?.length) {
+                        const chapters = self._chapterData.chapters;
+                        let idx = -1;
+                        for (let i = chapters.length - 1; i >= 0; i--) {
+                            if (ct >= chapters[i].start) { idx = i; break; }
+                        }
+                        if (idx !== self._lastActiveChapterIdx) {
+                            self._lastActiveChapterIdx = idx;
+                            self._updateChapterHUD(idx);
+                            document.querySelectorAll('.cf-chapter-seg').forEach((seg, si) => seg.classList.toggle('cf-seg-active', si === idx));
+                            document.querySelectorAll('.cf-chapter-label').forEach((lbl, li) => lbl.classList.toggle('cf-label-active', li === idx));
+                        }
+                    }
+
+                    // ── Auto-skip ──
+                    if (self._autoSkipActive && self._autoSkipZones?.length) {
+                        const zones = self._autoSkipZones;
+                        let zi = self._autoSkipZoneIdx;
+                        if (zi > 0 && zones[zi - 1]?.end > ct + 1) zi = 0;
+                        while (zi < zones.length && zones[zi].end <= ct) zi++;
+                        self._autoSkipZoneIdx = zi;
+
+                        if (zi < zones.length) {
+                            const zone = zones[zi];
+                            if (ct >= zone.start && ct < zone.end) {
+                                const preset = self._getAutoSkipPreset();
+                                if (zone.type === 'pause' && preset?.silenceSpeed) {
+                                    if (self._autoSkipSavedRate === null) {
+                                        self._autoSkipSavedRate = video.playbackRate;
+                                        video.playbackRate = preset.silenceSpeed;
+                                    }
+                                } else {
+                                    video.currentTime = zone.end + 0.05;
+                                    self._autoSkipZoneIdx++;
+                                }
+                                self._playbackLoopRAF = requestAnimationFrame(tick);
+                                return;
+                            }
+                        }
+                        if (self._autoSkipSavedRate !== null) {
+                            video.playbackRate = self._autoSkipSavedRate;
+                            self._autoSkipSavedRate = null;
+                        }
+                    }
+
+                    self._playbackLoopRAF = requestAnimationFrame(tick);
+                };
+                this._playbackLoopRAF = requestAnimationFrame(tick);
+            },
+
+            _stopPlaybackLoop() {
+                if (this._playbackLoopRAF) { cancelAnimationFrame(this._playbackLoopRAF); this._playbackLoopRAF = null; }
             },
 
             // Speech pace analysis — from OpenCut audio analysis
@@ -1982,45 +1998,17 @@
                 this._startChapterTracking();
             },
     
-            // ═══ CHAPTER HUD — Floating current chapter indicator on video ═══
             _startChapterTracking() {
                 this._stopChapterTracking();
                 if (!appState.settings.cfShowChapterHUD || !this._chapterData?.chapters?.length) return;
-    
-                const track = () => {
-                    const video = document.querySelector('video.html5-main-video');
-                    if (!video || !this._chapterData?.chapters?.length) {
-                        this._chapterTrackingRAF = requestAnimationFrame(track);
-                        return;
-                    }
-                    const ct = video.currentTime;
-                    const chapters = this._chapterData.chapters;
-                    let idx = -1;
-                    for (let i = chapters.length - 1; i >= 0; i--) {
-                        if (ct >= chapters[i].start) { idx = i; break; }
-                    }
-                    if (idx !== this._lastActiveChapterIdx) {
-                        this._lastActiveChapterIdx = idx;
-                        this._updateChapterHUD(idx);
-                        // Highlight active segment on progress bar
-                        document.querySelectorAll('.cf-chapter-seg').forEach((seg, si) => {
-                            seg.classList.toggle('cf-seg-active', si === idx);
-                        });
-                        document.querySelectorAll('.cf-chapter-label').forEach((lbl, li) => {
-                            lbl.classList.toggle('cf-label-active', li === idx);
-                        });
-                    }
-                    this._chapterTrackingRAF = requestAnimationFrame(track);
-                };
-                this._chapterTrackingRAF = requestAnimationFrame(track);
+                this._chapterTrackingActive = true;
+                this._ensurePlaybackLoop();
             },
-    
+
             _stopChapterTracking() {
-                if (this._chapterTrackingRAF) {
-                    cancelAnimationFrame(this._chapterTrackingRAF);
-                    this._chapterTrackingRAF = null;
-                }
+                this._chapterTrackingActive = false;
                 this._lastActiveChapterIdx = -1;
+                if (!this._autoSkipActive) this._stopPlaybackLoop();
             },
     
             _updateChapterHUD(chapterIdx) {
