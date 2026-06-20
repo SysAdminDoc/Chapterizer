@@ -1380,20 +1380,26 @@
                         const totalSecs = duration || (segments[segments.length-1]?.start+30) || 300;
                         const windowSize = 30, windows = [];
                         for (const seg of segments) { const idx = Math.floor(seg.start/windowSize); while (windows.length<=idx) windows.push({start:windows.length*windowSize,texts:[]}); windows[idx].texts.push(seg.text); }
-                        const groupWindowCount = 2, groups = [];
+                        const groupWindowCount = totalSecs > 2700 ? 4 : 2;
+                        const groups = [];
                         for (let i=0;i<windows.length;i+=groupWindowCount) { const sl=windows.slice(i,i+groupWindowCount); const t=sl.map(w=>w.texts.join(' ')).join(' '); if(t.trim()) groups.push({start:sl[0]?.start||0,text:t}); }
                         if (groups.length<2) { self.postMessage({chapters:[{start:0,title:'Full Video',end:totalSecs}],pois:[]}); return; }
                         const vectors = tfidf(groups.map(g=>g.text));
                         const similarities = []; for (let i=1;i<groups.length;i++) similarities.push({idx:i,sim:cosine(vectors[i-1],vectors[i])});
-                        const sims = similarities.map(s=>s.sim); const sorted=[...sims].sort((a,b)=>a-b);
-                        const mean=sims.reduce((a,b)=>a+b,0)/sims.length; const std=Math.sqrt(sims.reduce((a,b)=>a+(b-mean)**2,0)/sims.length);
-                        const statTh=mean-0.5*std; const pctTh=sorted[Math.floor(sorted.length*0.25)]||0;
-                        const threshold=Math.max(0.05,Math.min(statTh,pctTh+0.05));
+                        const sims = similarities.map(s=>s.sim);
+                        const depthScores = sims.map((sim, i) => {
+                            let leftPeak = sim, rightPeak = sim;
+                            for (let l = i-1; l >= 0; l--) { if (sims[l] > leftPeak) leftPeak = sims[l]; else break; }
+                            for (let r = i+1; r < sims.length; r++) { if (sims[r] > rightPeak) rightPeak = sims[r]; else break; }
+                            return (leftPeak - sim) + (rightPeak - sim);
+                        });
+                        const sortedDepths = [...depthScores].sort((a,b) => b-a);
+                        const depthThreshold = sortedDepths[Math.min(Math.floor(sortedDepths.length * 0.25), sortedDepths.length-1)] || 0.1;
                         const boundaries=[0];
-                        for (const {idx,sim} of similarities) { if (sim<threshold) { const last=groups[boundaries[boundaries.length-1]].start; if (groups[idx].start-last>=90) boundaries.push(idx); } }
+                        for (let i=0;i<similarities.length;i++) { if (depthScores[i]>=depthThreshold) { const last=groups[boundaries[boundaries.length-1]].start; if (groups[similarities[i].idx].start-last>=90) boundaries.push(similarities[i].idx); } }
                         const tMin=Math.max(3,Math.floor(totalSecs/300)), tMax=Math.max(6,Math.ceil(totalSecs/180)), tCap=Math.min(tMax,15);
-                        while (boundaries.length>tCap) { let bm=1,bs=-1; for (let i=1;i<boundaries.length;i++) { const s=similarities.find(s=>s.idx===boundaries[i])?.sim??1; if(s>bs){bs=s;bm=i;} } boundaries.splice(bm,1); }
-                        if (boundaries.length<tMin && groups.length>=4) { const ud=similarities.filter(s=>!boundaries.includes(s.idx)&&s.sim<mean).sort((a,b)=>a.sim-b.sim); for (const d of ud) { if(boundaries.length>=tMin) break; const dt=groups[d.idx].start; if(!boundaries.some(bi=>Math.abs(groups[bi].start-dt)<60)){boundaries.push(d.idx);boundaries.sort((a,b)=>a-b);} } }
+                        while (boundaries.length>tCap) { let bm=1,bs=Infinity; for (let i=1;i<boundaries.length;i++) { const si=similarities.findIndex(s=>s.idx===boundaries[i]); const d=si>=0?depthScores[si]:0; if(d<bs){bs=d;bm=i;} } boundaries.splice(bm,1); }
+                        if (boundaries.length<tMin && groups.length>=4) { const ud=similarities.map((s,i)=>({...s,depth:depthScores[i]})).filter(s=>!boundaries.includes(s.idx)&&s.depth>0).sort((a,b)=>b.depth-a.depth); for (const d of ud) { if(boundaries.length>=tMin) break; const dt=groups[d.idx].start; if(!boundaries.some(bi=>Math.abs(groups[bi].start-dt)<60)){boundaries.push(d.idx);boundaries.sort((a,b)=>a-b);} } }
                         const chapters = boundaries.map((bIdx,i) => {
                             const endIdx=i<boundaries.length-1?boundaries[i+1]:groups.length; const mv={};
                             for (let g=bIdx;g<endIdx;g++) for (const [t,s] of Object.entries(vectors[g])) mv[t]=(mv[t]||0)+s;
@@ -1450,7 +1456,7 @@
                 // Keep groups small regardless of video length so TF-IDF vectors stay distinctive.
                 // Previous approach scaled groups with video length, making them 3-4 min for long videos,
                 // which caused vectors to converge and chapters to stop being detected past ~10 min.
-                const groupWindowCount = 2; // 2 × 30s = 60s per group — consistent resolution
+                const groupWindowCount = totalSecs > 2700 ? 4 : 2;
                 const groups = [];
                 for (let i = 0; i < windows.length; i += groupWindowCount) {
                     const slice = windows.slice(i, i + groupWindowCount);
@@ -1471,26 +1477,26 @@
                     similarities.push({ idx: i, sim: this._nlpCosine(vectors[i - 1], vectors[i]) });
                 }
 
-                // Adaptive threshold: use percentile-based approach for long videos
+                // Depth-score valley detection (TextTiling-inspired)
                 const sims = similarities.map(s => s.sim);
-                const sortedSims = [...sims].sort((a, b) => a - b);
-                const meanSim = sims.reduce((a, b) => a + b, 0) / sims.length;
-                const stdSim = Math.sqrt(sims.reduce((a, b) => a + (b - meanSim) ** 2, 0) / sims.length);
-                // Use lower of: mean - 0.5*std OR 25th percentile — whichever finds more boundaries
-                const statThreshold = meanSim - 0.5 * stdSim;
-                const pctThreshold = sortedSims[Math.floor(sortedSims.length * 0.25)] || 0;
-                const threshold = Math.max(0.05, Math.min(statThreshold, pctThreshold + 0.05));
-                this._log('Cosine threshold:', threshold.toFixed(3), 'mean:', meanSim.toFixed(3), 'std:', stdSim.toFixed(3), 'p25:', pctThreshold.toFixed(3));
+                const depthScores = sims.map((sim, i) => {
+                    let leftPeak = sim, rightPeak = sim;
+                    for (let l = i - 1; l >= 0; l--) { if (sims[l] > leftPeak) leftPeak = sims[l]; else break; }
+                    for (let r = i + 1; r < sims.length; r++) { if (sims[r] > rightPeak) rightPeak = sims[r]; else break; }
+                    return (leftPeak - sim) + (rightPeak - sim);
+                });
+                const sortedDepths = [...depthScores].sort((a, b) => b - a);
+                const depthThreshold = sortedDepths[Math.min(Math.floor(sortedDepths.length * 0.25), sortedDepths.length - 1)] || 0.1;
+                this._log('Depth-score threshold:', depthThreshold.toFixed(3), 'max:', sortedDepths[0]?.toFixed(3));
 
-                // Minimum gap between boundaries is time-based (90 seconds), not group-count-based
                 const minGapSeconds = 90;
                 const boundaries = [0];
-                for (const { idx, sim } of similarities) {
-                    if (sim < threshold) {
+                for (let i = 0; i < similarities.length; i++) {
+                    if (depthScores[i] >= depthThreshold) {
                         const lastBoundaryTime = groups[boundaries[boundaries.length - 1]].start;
-                        const thisTime = groups[idx].start;
+                        const thisTime = groups[similarities[i].idx].start;
                         if (thisTime - lastBoundaryTime >= minGapSeconds) {
-                            boundaries.push(idx);
+                            boundaries.push(similarities[i].idx);
                         }
                     }
                 }
@@ -1500,26 +1506,23 @@
                 const targetMax = Math.max(6, Math.ceil(totalSecs / 180));  // 1 per 3 min
                 const targetCap = Math.min(targetMax, 15); // hard cap
 
-                // Trim excess: remove boundaries with smallest similarity drops
                 while (boundaries.length > targetCap) {
-                    let bestMerge = 1, bestSim = -1;
+                    let bestMerge = 1, bestDepth = Infinity;
                     for (let i = 1; i < boundaries.length; i++) {
-                        // Find the boundary with highest similarity (weakest topic change)
-                        const s = similarities.find(s => s.idx === boundaries[i])?.sim ?? 1;
-                        if (s > bestSim) { bestSim = s; bestMerge = i; }
+                        const si = similarities.findIndex(s => s.idx === boundaries[i]);
+                        const d = si >= 0 ? depthScores[si] : 0;
+                        if (d < bestDepth) { bestDepth = d; bestMerge = i; }
                     }
                     boundaries.splice(bestMerge, 1);
                 }
 
-                // Add boundaries if too few: split largest chapters at biggest similarity drops
                 if (boundaries.length < targetMin && groups.length >= 4) {
-                    // Find low-similarity points not yet used as boundaries
                     const unusedDrops = similarities
-                        .filter(s => !boundaries.includes(s.idx) && s.sim < meanSim)
-                        .sort((a, b) => a.sim - b.sim);
+                        .map((s, i) => ({ ...s, depth: depthScores[i] }))
+                        .filter(s => !boundaries.includes(s.idx) && s.depth > 0)
+                        .sort((a, b) => b.depth - a.depth);
                     for (const drop of unusedDrops) {
                         if (boundaries.length >= targetMin) break;
-                        // Check time gap from nearest existing boundary
                         const dropTime = groups[drop.idx].start;
                         const tooClose = boundaries.some(bIdx => Math.abs(groups[bIdx].start - dropTime) < 60);
                         if (!tooClose) {
@@ -1786,6 +1789,17 @@
                         pauses.push({ start: segEnd, end: nextStart, duration: Math.round(gap * 10) / 10 });
                     }
                 }
+                // Intra-segment pause detection from word-level timing
+                for (const seg of segments) {
+                    if (!seg.words || seg.words.length < 2) continue;
+                    for (let w = 0; w < seg.words.length - 1; w++) {
+                        const gap = seg.words[w + 1].start - seg.words[w].end;
+                        if (gap >= threshold) {
+                            pauses.push({ start: seg.words[w].end, end: seg.words[w + 1].start, duration: Math.round(gap * 10) / 10 });
+                        }
+                    }
+                }
+                pauses.sort((a, b) => a.start - b.start);
                 this._log('Pause detection:', pauses.length, 'pauses >', threshold + 's in', segments.length, 'segments');
                 return pauses;
             },
