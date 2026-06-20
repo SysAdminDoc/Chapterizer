@@ -15,6 +15,8 @@
 - Chapter export as JSON with structured data (timestamps, titles, POIs, confidence)
 - Undo button on auto-skip toasts to seek back to pre-skip position
 - Filler word regex compilation memoization
+- Multi-language filler word catalogs (es, fr, de, pt, ja) — auto-activated when non-English transcript detected
+- SponsorBlock integration — fetches segment data and snaps chapter boundaries to sponsor/intro/outro edges
 
 ### Changed
 - Chapter tracking and auto-skip merged into single RAF playback loop (halved per-frame CPU cost)
