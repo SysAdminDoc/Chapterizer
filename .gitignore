@@ -25,3 +25,9 @@ Desktop.ini
 *~
 .vscode/
 .idea/
+
+# AI config
+.codex/
+.ai/
+PROJECT_CONTEXT.md
+CONTINUATION_PROMPT.md
