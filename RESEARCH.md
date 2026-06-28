@@ -65,7 +65,7 @@ The highest-value opportunities in priority order:
 
 ### Bugs Found
 - **CRITICAL: Missing method definitions** (`Chapterizer.user.js`): `_gmGet()`, `_gmPostJson()`, and `_buildSapisidAuth()` are called in fallback transcript methods 4-6 (lines 753, 812-813, 876, 881, 955-956) but are never defined anywhere in the source. These fallback paths will throw `TypeError` and always fail. Methods 1-3 via `TranscriptService` still work, but the fallback chain is broken.
-- **Missing `.gitignore`**: No `.gitignore` in the repo. Should exclude `CLAUDE.md`, `.claude/`, `node_modules/`, etc.
+- **Missing `.gitignore`**: No `.gitignore` in the repo. Should exclude `node_modules/`, etc.
 
 ### Missing Guardrails
 - **No rate limiting on transcript API calls**: Rapid SPA navigation could trigger many concurrent Innertube API requests. No debounce or abort controller on `_fetchTranscript`.
