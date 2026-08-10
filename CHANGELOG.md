@@ -47,3 +47,16 @@
 - Speech pace analysis and keywords-by-chapter in Analysis tab
 - One-click chapter export to clipboard
 - Smart localStorage caching per video ID
+
+## Roadmap archive — 2026-08-10 — ROADMAP.md
+
+<details>
+<summary>Original roadmap snapshot</summary>
+
+```markdown
+# Roadmap — Chapterizer
+
+No actionable items remaining. See `Roadmap_Blocked.md` for items blocked on external factors.
+```
+
+</details>
